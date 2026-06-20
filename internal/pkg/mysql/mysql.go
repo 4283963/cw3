@@ -56,6 +56,7 @@ func autoMigrate(db *gorm.DB) error {
 		&model.StreamSession{},
 		&model.StreamQualityLog{},
 		&model.StreamControlLog{},
+		&model.CDNSwitchLog{},
 	)
 }
 

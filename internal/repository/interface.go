@@ -29,6 +29,10 @@ type StreamRedisRepository interface {
 
 	AcquireLock(ctx context.Context, lockKey string, requestID string, expireSec int) (bool, error)
 	ReleaseLock(ctx context.Context, lockKey string, requestID string) (bool, error)
+
+	UpdateCDNLine(ctx context.Context, roomID string, line model.CDNLineType, url string, expireSec int) (string, model.CDNLineType, string, bool, error)
+	BatchUpdateCDNLine(ctx context.Context, roomIDs []string, line model.CDNLineType, url string, expireSec int) ([]model.CDNSwitchResultItem, []model.CDNSwitchResultItem, error)
+	GetCDNSwitchLogs(ctx context.Context, roomID string, page, pageSize int) ([]*model.CDNSwitchLog, int64, error)
 }
 
 type StreamMySQLRepository interface {
@@ -44,4 +48,7 @@ type StreamMySQLRepository interface {
 
 	CreateControlLog(ctx context.Context, log *model.StreamControlLog) error
 	GetControlLogs(ctx context.Context, roomID string, page, pageSize int) ([]*model.StreamControlLog, int64, error)
+
+	BatchCreateCDNSwitchLogs(ctx context.Context, logs []*model.CDNSwitchLog) error
+	GetCDNSwitchLogs(ctx context.Context, roomID string, page, pageSize int) ([]*model.CDNSwitchLog, int64, error)
 }

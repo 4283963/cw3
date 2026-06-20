@@ -22,11 +22,15 @@ func SetupRouter(streamController *controller.StreamController) *gin.Engine {
 
 			stream.POST("/control", middleware.OperatorAuthMiddleware(), streamController.ControlStream)
 
+			stream.POST("/cdn/switch", middleware.OperatorAuthMiddleware(), streamController.BatchSwitchCDN)
+
 			stream.GET("/info/:room_id", streamController.GetStreamInfo)
 
 			stream.GET("/quality/:room_id/logs", streamController.GetQualityLogs)
 
 			stream.GET("/control/logs", streamController.GetControlLogs)
+
+			stream.GET("/cdn/logs", streamController.GetCDNSwitchLogs)
 
 			stream.GET("/active", streamController.GetAllActiveStreams)
 		}

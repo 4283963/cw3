@@ -158,6 +158,8 @@ func (s *streamService) ReportStreamQuality(ctx context.Context, req *model.Stre
 			FPS:          req.FPS,
 			Bitrate:      req.Bitrate,
 			LastReportAt: nowUnix,
+			CDNLine:      model.CDNLinePrimary,
+			CDNURL:       model.DefaultPrimaryCDNURL,
 		}
 		expectLastReportAt = 0
 	} else {
@@ -381,4 +383,147 @@ func (s *streamService) generateCourseID() uint64 {
 		return uint64(s.lr.Int63n(10000) + 1000)
 	}
 	return uint64(n.Int64()) + 1000
+}
+
+func (s *streamService) generateBatchID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("batch-%d-%d", time.Now().UnixNano(), s.lr.Int63n(1000000))
+	}
+	return "batch-" + hex.EncodeToString(b)
+}
+
+func (s *streamService) BatchSwitchCDN(ctx context.Context, req *model.BatchSwitchCDNRequest) (*model.BatchSwitchCDNResponse, error) {
+	now := time.Now()
+	nowUnix := now.Unix()
+
+	targetLine := model.CDNLineType(req.TargetLine)
+	if !targetLine.Valid() {
+		return nil, fmt.Errorf("invalid target_line: %s", req.TargetLine)
+	}
+
+	var targetURL string
+	if targetLine == model.CDNLineBackup {
+		if req.BackupURL != "" {
+			targetURL = req.BackupURL
+		} else {
+			targetURL = model.DefaultBackupCDNURL
+		}
+	} else {
+		if req.PrimaryURL != "" {
+			targetURL = req.PrimaryURL
+		} else {
+			targetURL = model.DefaultPrimaryCDNURL
+		}
+	}
+
+	seen := make(map[string]struct{}, len(req.RoomIDs))
+	uniqueRoomIDs := make([]string, 0, len(req.RoomIDs))
+	for _, roomID := range req.RoomIDs {
+		if _, ok := seen[roomID]; ok {
+			continue
+		}
+		seen[roomID] = struct{}{}
+		uniqueRoomIDs = append(uniqueRoomIDs, roomID)
+	}
+
+	batchID := s.generateBatchID()
+	type switchContext struct {
+		roomID   string
+		fromLine model.CDNLineType
+		fromURL  string
+	}
+
+	switchCtxs := make([]switchContext, 0, len(uniqueRoomIDs))
+	var successItems []model.CDNSwitchResultItem
+	var failedItems []model.CDNSwitchResultItem
+
+	for _, roomID := range uniqueRoomIDs {
+		requestID, err := s.acquireRoomLock(ctx, roomID)
+		if err != nil {
+			failedItems = append(failedItems, model.CDNSwitchResultItem{
+				RoomID: roomID,
+				Reason: "acquire room lock timeout",
+			})
+			continue
+		}
+
+		_, fromLine, fromURL, ok, err := s.redisRepo.UpdateCDNLine(ctx, roomID, targetLine, targetURL, model.RedisStreamExpireSeconds)
+		s.releaseRoomLock(ctx, roomID, requestID)
+
+		if err != nil {
+			failedItems = append(failedItems, model.CDNSwitchResultItem{
+				RoomID: roomID,
+				Reason: "update cdn line failed: " + err.Error(),
+			})
+			continue
+		}
+
+		if !ok {
+			failedItems = append(failedItems, model.CDNSwitchResultItem{
+				RoomID: roomID,
+				Reason: "stream not active or info missing",
+			})
+			continue
+		}
+
+		switchCtxs = append(switchCtxs, switchContext{
+			roomID:   roomID,
+			fromLine: fromLine,
+			fromURL:  fromURL,
+		})
+		successItems = append(successItems, model.CDNSwitchResultItem{
+			RoomID: roomID,
+			CDNURL: targetURL,
+		})
+	}
+
+	if len(switchCtxs) > 0 {
+		logs := make([]*model.CDNSwitchLog, 0, len(switchCtxs))
+		for _, sc := range switchCtxs {
+			logs = append(logs, &model.CDNSwitchLog{
+				RoomID:     sc.roomID,
+				OperatorID: req.OperatorID,
+				FromLine:   sc.fromLine,
+				ToLine:     targetLine,
+				FromURL:    sc.fromURL,
+				ToURL:      targetURL,
+				BatchID:    batchID,
+				Reason:     req.Reason,
+				SwitchedAt: now,
+			})
+		}
+
+		if err := s.mysqlRepo.BatchCreateCDNSwitchLogs(ctx, logs); err != nil {
+			return nil, fmt.Errorf("batch create cdn switch logs failed: %w", err)
+		}
+	}
+
+	resp := &model.BatchSwitchCDNResponse{}
+	resp.Code = 0
+	resp.Message = "success"
+	resp.Data.SwitchedAt = nowUnix
+	resp.Data.TargetLine = targetLine
+	resp.Data.Success = successItems
+	resp.Data.Failed = failedItems
+	resp.Data.SuccessCount = len(successItems)
+	resp.Data.FailedCount = len(failedItems)
+
+	return resp, nil
+}
+
+func (s *streamService) GetCDNSwitchLogs(ctx context.Context, roomID string, page, pageSize int) ([]*model.CDNSwitchLog, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	logs, total, err := s.mysqlRepo.GetCDNSwitchLogs(ctx, roomID, page, pageSize)
+	if err != nil {
+		return nil, 0, fmt.Errorf("get cdn switch logs failed: %w", err)
+	}
+
+	return logs, total, nil
 }

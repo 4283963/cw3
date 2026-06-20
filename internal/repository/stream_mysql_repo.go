@@ -198,3 +198,35 @@ func (r *streamMySQLRepository) GetControlLogs(ctx context.Context, roomID strin
 
 	return logs, total, nil
 }
+
+func (r *streamMySQLRepository) BatchCreateCDNSwitchLogs(ctx context.Context, logs []*model.CDNSwitchLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+
+	if err := r.db.WithContext(ctx).Create(logs).Error; err != nil {
+		return fmt.Errorf("batch create cdn switch logs failed: %w", err)
+	}
+	return nil
+}
+
+func (r *streamMySQLRepository) GetCDNSwitchLogs(ctx context.Context, roomID string, page, pageSize int) ([]*model.CDNSwitchLog, int64, error) {
+	var logs []*model.CDNSwitchLog
+	var total int64
+
+	query := r.db.WithContext(ctx).Model(&model.CDNSwitchLog{})
+	if roomID != "" {
+		query = query.Where("room_id = ?", roomID)
+	}
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("count cdn switch logs failed: %w", err)
+	}
+
+	offset := (page - 1) * pageSize
+	if err := query.Offset(offset).Limit(pageSize).Order("switched_at DESC").Find(&logs).Error; err != nil {
+		return nil, 0, fmt.Errorf("get cdn switch logs failed: %w", err)
+	}
+
+	return logs, total, nil
+}

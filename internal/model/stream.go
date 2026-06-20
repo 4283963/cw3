@@ -15,6 +15,21 @@ const (
 	StreamStatusStopped      StreamStatus = "stopped"
 )
 
+type CDNLineType string
+
+const (
+	CDNLinePrimary CDNLineType = "primary"
+	CDNLineBackup  CDNLineType = "backup"
+)
+
+func (c CDNLineType) String() string {
+	return string(c)
+}
+
+func (c CDNLineType) Valid() bool {
+	return c == CDNLinePrimary || c == CDNLineBackup
+}
+
 type StreamSession struct {
 	gorm.Model
 	RoomID      string       `gorm:"column:room_id;size:64;not null;index:idx_room_status,priority:1" json:"room_id"`
@@ -60,4 +75,21 @@ type StreamControlLog struct {
 
 func (StreamControlLog) TableName() string {
 	return "stream_control_logs"
+}
+
+type CDNSwitchLog struct {
+	gorm.Model
+	RoomID     string      `gorm:"column:room_id;size:64;not null;index" json:"room_id"`
+	OperatorID uint64      `gorm:"column:operator_id;not null;index" json:"operator_id"`
+	FromLine   CDNLineType `gorm:"column:from_line;size:20;not null" json:"from_line"`
+	ToLine     CDNLineType `gorm:"column:to_line;size:20;not null" json:"to_line"`
+	FromURL    string      `gorm:"column:from_url;size:512" json:"from_url"`
+	ToURL      string      `gorm:"column:to_url;size:512;not null" json:"to_url"`
+	BatchID    string      `gorm:"column:batch_id;size:64;not null;index" json:"batch_id"`
+	Reason     string      `gorm:"column:reason;size:500" json:"reason"`
+	SwitchedAt time.Time   `gorm:"column:switched_at;not null;index" json:"switched_at"`
+}
+
+func (CDNSwitchLog) TableName() string {
+	return "stream_cdn_switch_logs"
 }

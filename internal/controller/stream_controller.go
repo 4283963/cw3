@@ -186,3 +186,56 @@ func (c *StreamController) GetAllActiveStreams(ctx *gin.Context) {
 		},
 	})
 }
+
+func (c *StreamController) BatchSwitchCDN(ctx *gin.Context) {
+	var req model.BatchSwitchCDNRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, model.Response{
+			Code:    400,
+			Message: "invalid request body: " + err.Error(),
+		})
+		return
+	}
+
+	if req.TargetLine == string(model.CDNLineBackup) && req.BackupURL == "" {
+		req.BackupURL = model.DefaultBackupCDNURL
+	}
+
+	resp, err := c.streamService.BatchSwitchCDN(ctx.Request.Context(), &req)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, model.Response{
+			Code:    500,
+			Message: "batch switch cdn failed: " + err.Error(),
+		})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, resp)
+}
+
+func (c *StreamController) GetCDNSwitchLogs(ctx *gin.Context) {
+	roomID := ctx.Query("room_id")
+
+	page, _ := strconv.Atoi(ctx.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(ctx.DefaultQuery("page_size", "20"))
+
+	logs, total, err := c.streamService.GetCDNSwitchLogs(ctx.Request.Context(), roomID, page, pageSize)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, model.Response{
+			Code:    500,
+			Message: "get cdn switch logs failed: " + err.Error(),
+		})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, model.Response{
+		Code:    0,
+		Message: "success",
+		Data: gin.H{
+			"list":  logs,
+			"total": total,
+			"page":  page,
+			"size":  pageSize,
+		},
+	})
+}

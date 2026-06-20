@@ -22,6 +22,14 @@ const (
 	ControlActionRestart = "restart"
 )
 
+const (
+	CDNSwitchActionToBackup  = "to_backup"
+	CDNSwitchActionToPrimary = "to_primary"
+
+	DefaultPrimaryCDNURL = "rtmp://primary.cdn.example.com/live"
+	DefaultBackupCDNURL  = "rtmp://backup.cdn.example.com/live"
+)
+
 func (s StreamStatus) String() string {
 	return string(s)
 }

@@ -46,6 +46,36 @@ type StreamRealTimeInfo struct {
 	FPS          int          `json:"fps"`
 	Bitrate      int          `json:"bitrate"`
 	LastReportAt int64        `json:"last_report_at"`
+	CDNLine      CDNLineType  `json:"cdn_line"`
+	CDNURL       string       `json:"cdn_url"`
+}
+
+type BatchSwitchCDNRequest struct {
+	RoomIDs    []string `json:"room_ids" binding:"required,min=1,max=100,dive,required,max=64"`
+	OperatorID uint64   `json:"operator_id" binding:"required,min=1"`
+	TargetLine string   `json:"target_line" binding:"required,oneof=primary backup"`
+	BackupURL  string   `json:"backup_url" binding:"required_if=TargetLine backup,url"`
+	PrimaryURL string   `json:"primary_url" binding:"omitempty,url"`
+	Reason     string   `json:"reason" binding:"required,max=500"`
+}
+
+type BatchSwitchCDNResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		SwitchedAt   int64                 `json:"switched_at"`
+		TargetLine   CDNLineType           `json:"target_line"`
+		Success      []CDNSwitchResultItem `json:"success"`
+		Failed       []CDNSwitchResultItem `json:"failed"`
+		SuccessCount int                   `json:"success_count"`
+		FailedCount  int                   `json:"failed_count"`
+	} `json:"data"`
+}
+
+type CDNSwitchResultItem struct {
+	RoomID string `json:"room_id"`
+	CDNURL string `json:"cdn_url,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 type Response struct {

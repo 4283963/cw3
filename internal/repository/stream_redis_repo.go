@@ -78,6 +78,32 @@ var (
 		redis.call("SET", key, count, "EX", ttl)
 		return count
 	`)
+
+	luaUpdateCDNLine = redis.NewScript(`
+		local key = KEYS[1]
+		local new_line = ARGV[1]
+		local new_url = ARGV[2]
+		local ttl = tonumber(ARGV[3])
+
+		local current = redis.call("GET", key)
+		if current == false then
+			return {0, "", ""}
+		end
+
+		local cjson_ok, decoded = pcall(cjson.decode, current)
+		if not cjson_ok then
+			return {0, "", ""}
+		end
+
+		local from_line = decoded["cdn_line"] or "primary"
+		local from_url = decoded["cdn_url"] or ""
+
+		decoded["cdn_line"] = new_line
+		decoded["cdn_url"] = new_url
+
+		redis.call("SET", key, cjson.encode(decoded), "EX", ttl)
+		return {1, from_line, from_url}
+	`)
 )
 
 type streamRedisRepository struct {
@@ -299,4 +325,68 @@ func (r *streamRedisRepository) GetAllActiveStreams(ctx context.Context) ([]stri
 	}
 
 	return roomIDs, nil
+}
+
+func (r *streamRedisRepository) UpdateCDNLine(ctx context.Context, roomID string, line model.CDNLineType, url string, expireSec int) (string, model.CDNLineType, string, bool, error) {
+	key := model.RedisKeyStreamInfo + roomID
+
+	res, err := luaUpdateCDNLine.Run(ctx, r.client,
+		[]string{key},
+		line.String(), url, expireSec,
+	).Result()
+	if err != nil {
+		return "", model.CDNLinePrimary, "", false, fmt.Errorf("update cdn line failed: %w", err)
+	}
+
+	result, ok := res.([]interface{})
+	if !ok || len(result) < 3 {
+		return "", model.CDNLinePrimary, "", false, fmt.Errorf("unexpected result type from lua script")
+	}
+
+	updated, _ := result[0].(int64)
+	fromLineStr, _ := result[1].(string)
+	fromURL, _ := result[2].(string)
+
+	updatedBool := updated == 1
+	fromLine := model.CDNLineType(fromLineStr)
+	if !fromLine.Valid() {
+		fromLine = model.CDNLinePrimary
+	}
+
+	return roomID, fromLine, fromURL, updatedBool, nil
+}
+
+func (r *streamRedisRepository) BatchUpdateCDNLine(ctx context.Context, roomIDs []string, line model.CDNLineType, url string, expireSec int) ([]model.CDNSwitchResultItem, []model.CDNSwitchResultItem, error) {
+	successItems := make([]model.CDNSwitchResultItem, 0, len(roomIDs))
+	failedItems := make([]model.CDNSwitchResultItem, 0)
+
+	for _, roomID := range roomIDs {
+		_, _, _, ok, err := r.UpdateCDNLine(ctx, roomID, line, url, expireSec)
+		if err != nil {
+			failedItems = append(failedItems, model.CDNSwitchResultItem{
+				RoomID: roomID,
+				Reason: "update cdn line error: " + err.Error(),
+			})
+			continue
+		}
+
+		if !ok {
+			failedItems = append(failedItems, model.CDNSwitchResultItem{
+				RoomID: roomID,
+				Reason: "stream not active or info missing",
+			})
+			continue
+		}
+
+		successItems = append(successItems, model.CDNSwitchResultItem{
+			RoomID: roomID,
+			CDNURL: url,
+		})
+	}
+
+	return successItems, failedItems, nil
+}
+
+func (r *streamRedisRepository) GetCDNSwitchLogs(ctx context.Context, roomID string, page, pageSize int) ([]*model.CDNSwitchLog, int64, error) {
+	return nil, 0, fmt.Errorf("cdn switch logs should be queried from mysql repository")
 }
