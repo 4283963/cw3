@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -28,6 +29,59 @@ func (r *streamMySQLRepository) CreateStreamSession(ctx context.Context, session
 	return nil
 }
 
+func (r *streamMySQLRepository) FirstOrCreateActiveSession(ctx context.Context, roomID string, template *model.StreamSession) (*model.StreamSession, bool, error) {
+	var existing model.StreamSession
+	err := r.db.WithContext(ctx).
+		Where("room_id = ? AND status IN ?", roomID, []model.StreamStatus{
+			model.StreamStatusLive,
+			model.StreamStatusLagging,
+		}).
+		Order("start_time DESC").
+		First(&existing).Error
+
+	if err == nil {
+		return &existing, false, nil
+	}
+
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, fmt.Errorf("query active session failed: %w", err)
+	}
+
+	template.RoomID = roomID
+
+	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var locked model.StreamSession
+		txErr := tx.Set("gorm:query_option", "FOR UPDATE").
+			Where("room_id = ? AND status IN ?", roomID, []model.StreamStatus{
+				model.StreamStatusLive,
+				model.StreamStatusLagging,
+			}).
+			Order("start_time DESC").
+			First(&locked).Error
+
+		if txErr == nil {
+			*template = locked
+			return nil
+		}
+
+		if !errors.Is(txErr, gorm.ErrRecordNotFound) {
+			return txErr
+		}
+
+		if createErr := tx.Create(template).Error; createErr != nil {
+			return createErr
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, false, fmt.Errorf("first or create session transaction failed: %w", err)
+	}
+
+	return template, true, nil
+}
+
 func (r *streamMySQLRepository) UpdateStreamSession(ctx context.Context, session *model.StreamSession) error {
 	if err := r.db.WithContext(ctx).Save(session).Error; err != nil {
 		return fmt.Errorf("update stream session failed: %w", err)
@@ -46,7 +100,7 @@ func (r *streamMySQLRepository) GetActiveSessionByRoomID(ctx context.Context, ro
 		First(&session).Error
 
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get active session failed: %w", err)

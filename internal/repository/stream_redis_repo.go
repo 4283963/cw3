@@ -12,6 +12,74 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
+const (
+	RedisLockPrefix     = "edu:stream:lock:"
+	RedisDefaultLockTTL = 5
+)
+
+var (
+	luaReleaseLock = redis.NewScript(`
+		if redis.call("GET", KEYS[1]) == ARGV[1] then
+			return redis.call("DEL", KEYS[1])
+		else
+			return 0
+		end
+	`)
+
+	luaCASSetStreamInfo = redis.NewScript(`
+		local key = KEYS[1]
+		local expect_ts = tonumber(ARGV[1])
+		local new_value = ARGV[2]
+		local ttl = tonumber(ARGV[3])
+
+		local current = redis.call("GET", key)
+		if current == false then
+			if expect_ts == 0 then
+				redis.call("SET", key, new_value, "EX", ttl)
+				return 1
+			else
+				return 0
+			end
+		end
+
+		local cjson_ok, decoded = pcall(cjson.decode, current)
+		if not cjson_ok then
+			redis.call("SET", key, new_value, "EX", ttl)
+			return 1
+		end
+
+		local current_ts = tonumber(decoded["last_report_at"] or 0)
+		if current_ts == expect_ts then
+			redis.call("SET", key, new_value, "EX", ttl)
+			return 1
+		end
+
+		return 0
+	`)
+
+	luaUpdateOnlineCount = redis.NewScript(`
+		local key = KEYS[1]
+		local ttl = tonumber(ARGV[1])
+
+		local current = redis.call("GET", key)
+		local count = 0
+
+		if current == false then
+			count = math.random(10, 60)
+		else
+			count = tonumber(current)
+			local change = math.random(-5, 5)
+			count = count + change
+			if count < 0 then
+				count = 0
+			end
+		end
+
+		redis.call("SET", key, count, "EX", ttl)
+		return count
+	`)
+)
+
 type streamRedisRepository struct {
 	client *redispkg.Client
 }
@@ -22,6 +90,29 @@ func NewStreamRedisRepository(client *redispkg.Client) StreamRedisRepository {
 	}
 }
 
+func (r *streamRedisRepository) AcquireLock(ctx context.Context, lockKey string, requestID string, expireSec int) (bool, error) {
+	fullKey := RedisLockPrefix + lockKey
+
+	ok, err := r.client.SetNX(ctx, fullKey, requestID, time.Duration(expireSec)*time.Second).Result()
+	if err != nil {
+		return false, fmt.Errorf("acquire lock %s failed: %w", fullKey, err)
+	}
+
+	return ok, nil
+}
+
+func (r *streamRedisRepository) ReleaseLock(ctx context.Context, lockKey string, requestID string) (bool, error) {
+	fullKey := RedisLockPrefix + lockKey
+
+	res, err := luaReleaseLock.Run(ctx, r.client, []string{fullKey}, requestID).Result()
+	if err != nil {
+		return false, fmt.Errorf("release lock %s failed: %w", fullKey, err)
+	}
+
+	releaseOk, _ := res.(int64)
+	return releaseOk == 1, nil
+}
+
 func (r *streamRedisRepository) SetStreamInfo(ctx context.Context, info *model.StreamRealTimeInfo, expireSec int) error {
 	key := model.RedisKeyStreamInfo + info.RoomID
 	data, err := json.Marshal(info)
@@ -30,6 +121,28 @@ func (r *streamRedisRepository) SetStreamInfo(ctx context.Context, info *model.S
 	}
 
 	return r.client.Set(ctx, key, data, time.Duration(expireSec)*time.Second).Err()
+}
+
+func (r *streamRedisRepository) SetStreamInfoCAS(ctx context.Context, roomID string, info *model.StreamRealTimeInfo, expireSec int, expectLastReportAt int64) (bool, error) {
+	key := model.RedisKeyStreamInfo + roomID
+
+	info.RoomID = roomID
+
+	data, err := json.Marshal(info)
+	if err != nil {
+		return false, fmt.Errorf("marshal stream info failed: %w", err)
+	}
+
+	res, err := luaCASSetStreamInfo.Run(ctx, r.client,
+		[]string{key},
+		expectLastReportAt, string(data), expireSec,
+	).Result()
+	if err != nil {
+		return false, fmt.Errorf("cas set stream info failed: %w", err)
+	}
+
+	ok, _ := res.(int64)
+	return ok == 1, nil
 }
 
 func (r *streamRedisRepository) GetStreamInfo(ctx context.Context, roomID string) (*model.StreamRealTimeInfo, error) {
@@ -46,6 +159,12 @@ func (r *streamRedisRepository) GetStreamInfo(ctx context.Context, roomID string
 	if err := json.Unmarshal(data, &info); err != nil {
 		return nil, fmt.Errorf("unmarshal stream info failed: %w", err)
 	}
+
+	if info.RoomID != "" && info.RoomID != roomID {
+		return nil, fmt.Errorf("room id mismatch: key=%s stored_room=%s", roomID, info.RoomID)
+	}
+
+	info.RoomID = roomID
 
 	return &info, nil
 }
@@ -70,6 +189,22 @@ func (r *streamRedisRepository) GetOnlineCount(ctx context.Context, roomID strin
 		return 0, fmt.Errorf("get online count failed: %w", err)
 	}
 	return count, nil
+}
+
+func (r *streamRedisRepository) UpdateOnlineCountAtomic(ctx context.Context, roomID string, expireSec int) (int, error) {
+	key := model.RedisKeyOnlineCount + roomID
+
+	res, err := luaUpdateOnlineCount.Run(ctx, r.client, []string{key}, expireSec).Result()
+	if err != nil {
+		return 0, fmt.Errorf("atomic update online count failed: %w", err)
+	}
+
+	count, ok := res.(int64)
+	if !ok {
+		return 0, fmt.Errorf("unexpected result type from lua script")
+	}
+
+	return int(count), nil
 }
 
 func (r *streamRedisRepository) IncrOnlineCount(ctx context.Context, roomID string) (int64, error) {

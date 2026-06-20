@@ -17,14 +17,16 @@ const (
 
 type StreamSession struct {
 	gorm.Model
-	RoomID      string       `gorm:"column:room_id;size:64;not null;index" json:"room_id"`
+	RoomID      string       `gorm:"column:room_id;size:64;not null;index:idx_room_status,priority:1" json:"room_id"`
 	TeacherID   uint64       `gorm:"column:teacher_id;not null;index" json:"teacher_id"`
 	CourseID    uint64       `gorm:"column:course_id;not null;index" json:"course_id"`
-	Status      StreamStatus `gorm:"column:status;size:20;not null;index" json:"status"`
+	Status      StreamStatus `gorm:"column:status;size:20;not null;index:idx_room_status,priority:2" json:"status"`
 	StartTime   time.Time    `gorm:"column:start_time;not null" json:"start_time"`
 	EndTime     *time.Time   `gorm:"column:end_time" json:"end_time,omitempty"`
 	OnlineCount int          `gorm:"column:online_count;default:0" json:"online_count"`
 	StopReason  string       `gorm:"column:stop_reason;size:255" json:"stop_reason,omitempty"`
+
+	ActiveSessionLock string `gorm:"-" json:"-"`
 }
 
 func (StreamSession) TableName() string {
