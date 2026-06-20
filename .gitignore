@@ -33,3 +33,20 @@ bin/
 obj/
 __pycache__/
 *.pyc
+
+# Go 项目
+/vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.sum
+.idea/
+.vscode/
+
+# 环境变量配置文件
+.env
+configs/config.local.yaml
